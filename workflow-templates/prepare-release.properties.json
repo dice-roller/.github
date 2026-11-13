@@ -1,0 +1,11 @@
+{
+  "name": "Dice Roller release preparation",
+  "description": "Prepare version-bump PRs with branch validation and tag merged releases.",
+  "iconName": "octicon tag",
+  "categories": [
+    "JavaScript"
+  ],
+  "filePatterns": [
+    "package.json$"
+  ]
+}
