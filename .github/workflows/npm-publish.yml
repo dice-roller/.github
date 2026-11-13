@@ -84,7 +84,8 @@ jobs:
                 echo "$GITHUB_REF_NAME only accepts $RELEASE_MAJOR.x versions, not $VERSION" >&2
                 exit 1
               fi
-              DIST_TAG="v$RELEASE_MAJOR"
+              # npm rejects version-like dist-tags such as v5.
+              DIST_TAG="release-$RELEASE_MAJOR"
               ;;
             *)
               echo "Unsupported publishing branch: $GITHUB_REF_NAME" >&2
