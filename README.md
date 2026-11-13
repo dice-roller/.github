@@ -6,10 +6,11 @@ Reusable GitHub Actions workflows and workflow templates for the Dice Roller org
 
 The shared publishing workflow is at `.github/workflows/npm-publish.yml`. It **stages** the calling repository's package from its `package.json` using npm Trusted Publishing (OIDC). A maintainer then reviews and approves the staged release with 2FA on npmjs.com before it becomes publicly available. No npm access token is stored.
 
-- `main` stages an unpublished version with the npm `latest` dist-tag.
-- `next` stages an unpublished version with the npm `next` dist-tag.
+- `main` stages **stable** versions under the npm `latest` dist-tag. This is the only branch allowed to stage a final major release.
+- `next` stages **prerelease versions only** (for example `6.0.0-beta.3`) under the npm `next` dist-tag. A stable `6.0.0` will be rejected.
+- `releases/vN` stages versions of the **same major only** under npm dist-tag `vN` (for example `releases/v5` accepts `5.5.2`, but rejects `6.0.0`). Maintenance branches may publish patch or minor updates without moving to a new major.
 - Other branches never stage; already-published versions are skipped.
-- Prerelease versions are blocked from the `latest` channel.
+- Invalid or mismatched versions fail before the workflow installs dependencies, builds or stages anything.
 - An unexpected registry response fails the workflow instead of treating the package as unpublished.
 - Optional caller inputs `test-command` and `build-command` override the default `npm test --if-present` and `npm run build --if-present`.
 
@@ -36,12 +37,14 @@ A new Trusted Publisher must complete its first successful release within two da
 
 ### Run manually from GitHub
 
-With the caller workflow on a package's **default branch**, open **Actions → Publish to npm → Run workflow** and choose `main` or `next`. Pushing a new version to either branch also triggers staging automatically. Afterwards, sign in to npmjs.com, open **Staged Packages**, review the artefact and choose **Approve** (2FA required).
+With the caller workflow on a package's **default branch**, open **Actions → Publish to npm → Run workflow** and choose `main`, `next` or an existing `releases/vN` branch. Pushing a new version to any of those branches also triggers staging automatically, provided the caller includes the appropriate branch filter. Afterwards, sign in to npmjs.com, open **Staged Packages**, review the artefact and choose **Approve** (2FA required).
 
 ### Security and setup notes
 
 - This repository must be **public** for public package repositories to use its reusable workflow and workflow templates.
-- Protect `main` and `next` in package repositories, and protect the central workflow's release references.
+- Protect `main`, `next` and maintained `releases/vN` branches in package repositories, and protect the central workflow's release references.
+- The workflow validates **versions at publication time**. It does not stop someone committing an incorrect version; add a PR status check if you also want to block invalid version bumps from merging.
+- Existing package-specific callers (such as the VitePress plugin pilot) must explicitly opt into `releases/v*` pushes to enable maintenance publishing.
 - The workflow expects one public npm package at the repository root and a committed `package-lock.json`.
 - Package-specific test/build commands and `prepublishOnly` scripts may duplicate work; adapt the caller inputs as needed.
 - Check that each package's `repository.url` matches its GitHub repository.
