@@ -50,6 +50,40 @@ With the caller workflow on a package's **default branch**, open **Actions → P
 - Package-specific test/build commands and `prepublishOnly` scripts may duplicate work; adapt the caller inputs as needed.
 - Check that each package's `repository.url` matches its GitHub repository.
 
+## Prepare Release workflow
+
+The reusable `.github/workflows/prepare-release.yml` separates **release preparation** from the existing npm **staging/publishing** workflow. The organisation workflow template at `workflow-templates/prepare-release.yml` installs the caller as `.github/workflows/prepare-release.yml` in each package repository.
+
+### How to use
+
+1. Install the caller workflow in the package repository's **default branch** (usually `main`). It must also be present on any other branch selected for manual dispatch, such as `next` or `releases/v5`.
+2. Enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** for that repository. The workflow needs `contents: write` and `pull-requests: write`, which are explicitly requested.
+3. In the package's **Actions → Prepare Release → Run workflow**, choose the branch to release, the version increment and an optional prerelease identifier (default `beta`).
+4. The shared workflow runs `npm version` without committing or tagging, checks the new version against the selected branch and creates a version-bump PR targeting that branch.
+5. Review and merge the PR. A separate job checks that it really is a generated, merged release PR and creates an annotated `vX.Y.Z` Git tag **on the merged commit**.
+6. The existing npm workflow runs from the branch push, stages the package under the correct npm dist-tag, and you approve the release on npmjs.com.
+
+### Branch/version restrictions
+
+| Target branch | Allowed version bump inputs | Required resulting version |
+| --- | --- | --- |
+| `main` | `patch`, `minor`, `major` | Stable release, no prerelease suffix |
+| `next` | `prerelease`, `prepatch`, `preminor`, `premajor` | Must have a prerelease suffix |
+| `releases/vN` | `patch`, `minor`, `prerelease`, `prepatch`, `preminor` | Major must equal `N` (before **and** after the bump) |
+| Other branches | None | Release preparation rejected |
+
+`premajor` on `next` prepares a **prerelease** of the next major (e.g. `7.0.0-beta.0`); it cannot produce a stable major release. Only `main` can prepare a stable `major` bump. The shared npm staging workflow independently checks the final branch/version policy again.
+
+The release branch name is `release/prepare/<target>/v<version>`, with slashes in target names replaced by hyphens. PRs are not automatically merged; the Git tag only appears once a matching generated PR is merged. The tag job works with normal merge, squash merge or rebase merge and refuses to move an existing tag to another commit.
+
+### Important GitHub Actions behaviour
+
+- A PR created using the built-in `GITHUB_TOKEN` may display **Approve workflows to run** before normal PR CI executes. GitHub requires this additional approval for PRs created by workflow automation. For CI to run automatically on these PRs instead, the release workflow would need to use a dedicated GitHub App installation token or fine-grained personal access token.
+- **Never merge the release PR before its required CI checks pass.** Keep branch protections in place on `main`, `next` and supported `releases/vN` branches.
+- This workflow uses `npm version --no-git-tag-version --ignore-scripts`, so it updates `package.json` and `package-lock.json` but does not run lifecycle hooks, create a version commit or create a tag until our own release steps do so. It assumes a root-level npm package and committed lockfile.
+- The npm staging workflow is separate: the merge is a real user action, so its push event triggers staging. The Git tag is for Git history only; publishing is not triggered by the tag.
+- A tag is created after the **release PR merge**, not after npm staging approval. If staging or approval fails, the tag still identifies the prepared release and the workflow can be retried.
+
 ## References
 
 - [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
