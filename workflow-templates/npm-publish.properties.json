@@ -1,0 +1,11 @@
+{
+  "name": "Dice Roller npm publishing",
+  "description": "Publish package versions from main (latest) or next (next) using npm Trusted Publishing.",
+  "iconName": "octicon package",
+  "categories": [
+    "JavaScript"
+  ],
+  "filePatterns": [
+    "package.json$"
+  ]
+}
