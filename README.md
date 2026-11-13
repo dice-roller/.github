@@ -8,9 +8,10 @@ The shared publishing workflow is at `.github/workflows/npm-publish.yml`. It **s
 
 - `main` stages **stable** versions under the npm `latest` dist-tag. This is the only branch allowed to stage a final major release.
 - `next` stages **prerelease versions only** (for example `6.0.0-beta.3`) under the npm `next` dist-tag. A stable `6.0.0` will be rejected.
-- `releases/vN` stages versions of the **same major only** under npm dist-tag `vN` (for example `releases/v5` accepts `5.5.2`, but rejects `6.0.0`). Maintenance branches may publish patch or minor updates without moving to a new major.
+- `releases/vN` stages versions of the **same major only** under npm dist-tag `release-N` (for example `releases/v5` accepts `5.5.2` under `release-5`, but rejects `6.0.0`). Maintenance branches may publish patch or minor updates without moving to a new major.
 - Other branches never stage; already-published versions are skipped.
 - Invalid or mismatched versions fail before the workflow installs dependencies, builds or stages anything.
+- npm rejects version-like dist-tags such as `v5`, so the `releases/v5` branch publishes under `release-5`. Users can install it with `npm install @dice-roller/rpg-dice-roller@release-5`, or request any compatible v5 directly using `@^5`.
 - An unexpected registry response fails the workflow instead of treating the package as unpublished.
 - Optional caller inputs `test-command` and `build-command` override the default `npm test --if-present` and `npm run build --if-present`.
 
