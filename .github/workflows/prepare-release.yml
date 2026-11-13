@@ -1,0 +1,272 @@
+name: Reusable release preparation
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: Prepare a release PR, or tag a merged release PR
+        required: true
+        type: string
+      bump:
+        description: npm version increment
+        required: false
+        type: string
+        default: patch
+      prerelease-id:
+        description: Identifier for prerelease versions
+        required: false
+        type: string
+        default: beta
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: inputs.mode == 'prepare' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out selected release branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          package-manager-cache: false
+
+      - name: Validate branch, bump and package version
+        id: release
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+          PREID: ${{ inputs.prerelease-id }}
+        run: |
+          set -euo pipefail
+          BRANCH="$GITHUB_REF_NAME"
+
+          if [[ ! "$PREID" =~ ^[0-9A-Za-z-]+$ ]]; then
+            echo "Invalid prerelease identifier: $PREID" >&2
+            exit 1
+          fi
+
+          case "$BRANCH" in
+            main)
+              case "$BUMP" in
+                patch|minor|major) ;;
+                *) echo "main permits only stable patch, minor or major bumps" >&2; exit 1 ;;
+              esac
+              ;;
+            next)
+              case "$BUMP" in
+                prerelease|prepatch|preminor|premajor) ;;
+                *) echo "next requires a prerelease bump" >&2; exit 1 ;;
+              esac
+              ;;
+            releases/v*)
+              if [[ ! "$BRANCH" =~ ^releases/v(0|[1-9][0-9]*)$ ]]; then
+                echo "Expected releases/vN, got $BRANCH" >&2
+                exit 1
+              fi
+              RELEASE_MAJOR="${BASH_REMATCH[1]}"
+              case "$BUMP" in
+                patch|minor|prerelease|prepatch|preminor) ;;
+                *) echo "$BRANCH cannot bump its major version" >&2; exit 1 ;;
+              esac
+              ;;
+            *)
+              echo "Unsupported release branch: $BRANCH" >&2
+              exit 1
+              ;;
+          esac
+
+          test -f package.json
+          test -f package-lock.json
+
+          CURRENT=$(node -p "require('./package.json').version")
+          if [[ ! "$CURRENT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid existing package version: $CURRENT" >&2
+            exit 1
+          fi
+          if [[ "$BRANCH" == releases/v* && "${BASH_REMATCH[1]}" != "$RELEASE_MAJOR" ]]; then
+            echo "$BRANCH cannot start from version $CURRENT" >&2
+            exit 1
+          fi
+
+          # Update package.json and lockfile, but make no commit or tag yet.
+          npm version "$BUMP" --preid "$PREID" --no-git-tag-version --ignore-scripts
+
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid resulting package version: $VERSION" >&2
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          PRERELEASE="${BASH_REMATCH[4]:-}"
+          case "$BRANCH" in
+            main)
+              if [[ -n "$PRERELEASE" ]]; then
+                echo "main must use a stable version, got $VERSION" >&2
+                exit 1
+              fi
+              ;;
+            next)
+              if [[ -z "$PRERELEASE" ]]; then
+                echo "next must use a prerelease version, got $VERSION" >&2
+                exit 1
+              fi
+              ;;
+            releases/v*)
+              if [[ "$MAJOR" != "$RELEASE_MAJOR" ]]; then
+                echo "$BRANCH only permits $RELEASE_MAJOR.x, got $VERSION" >&2
+                exit 1
+              fi
+              ;;
+          esac
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "target=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Release PR: $BRANCH $CURRENT -> $VERSION"
+
+      - name: Commit version and open release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TARGET: ${{ steps.release.outputs.target }}
+          BUMP: ${{ inputs.bump }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_BRANCH="release/prepare/${TARGET//\//-}/v$VERSION"
+          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null; then
+            echo "Release branch already exists: $RELEASE_BRANCH" >&2
+            exit 1
+          fi
+
+          git switch -c "$RELEASE_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "No package version changes to commit" >&2
+            exit 1
+          fi
+          git commit -m "chore(release): v$VERSION"
+          git push origin "HEAD:refs/heads/$RELEASE_BRANCH"
+
+          cat > /tmp/dice-roller-release.md <<EOF
+          <!-- dice-roller-release-pr -->
+          Prepare version \`$VERSION\` for the \`$TARGET\` branch.
+
+          - Bump type: \`$BUMP\`
+          - Target branch: \`$TARGET\`
+          - No Git tag is created until this PR is merged.
+          - Merging the PR triggers the existing npm staging workflow on the target branch.
+
+          This PR was created by the organisation's shared Prepare Release workflow.
+          EOF
+
+          gh pr create \
+            --base "$TARGET" \
+            --head "$RELEASE_BRANCH" \
+            --title "chore(release): v$VERSION" \
+            --body-file /tmp/dice-roller-release.md
+
+  tag:
+    if: >-
+      inputs.mode == 'tag' &&
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release/prepare/') &&
+      contains(github.event.pull_request.body, '<!-- dice-roller-release-pr -->')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out merged release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Verify merged version and create Git tag
+        shell: bash
+        env:
+          TARGET: ${{ github.event.pull_request.base.ref }}
+          SOURCE: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          VERSION=$(node -p "require('./package.json').version")
+          EXPECTED="release/prepare/${TARGET//\//-}/v$VERSION"
+
+          if [[ "$SOURCE" != "$EXPECTED" ]]; then
+            echo "Release PR source does not match the merged version: $SOURCE, expected $EXPECTED" >&2
+            exit 1
+          fi
+
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid merged version: $VERSION" >&2
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          PRERELEASE="${BASH_REMATCH[4]:-}"
+
+          case "$TARGET" in
+            main)
+              if [[ -n "$PRERELEASE" ]]; then
+                echo "Cannot tag a prerelease from main" >&2
+                exit 1
+              fi
+              ;;
+            next)
+              if [[ -z "$PRERELEASE" ]]; then
+                echo "Cannot tag a stable version from next" >&2
+                exit 1
+              fi
+              ;;
+            releases/v*)
+              if [[ ! "$TARGET" =~ ^releases/v(0|[1-9][0-9]*)$ || "$MAJOR" != "${BASH_REMATCH[1]:-}" ]]; then
+                echo "$TARGET cannot tag $VERSION" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported target branch: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+          # A release PR must actually update the version on the target.
+          OLD_VERSION=$(git show HEAD^:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if [[ "$OLD_VERSION" == "$VERSION" ]]; then
+            echo "The merged PR did not change the package version" >&2
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG^{}" >/dev/null; then
+            TAG_SHA=$(git rev-parse "refs/tags/$TAG^{}")
+            if [[ "$TAG_SHA" != "$(git rev-parse HEAD)" ]]; then
+              echo "Tag $TAG exists on a different commit" >&2
+              exit 1
+            fi
+            echo "Tag $TAG already points at this commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin "refs/tags/$TAG"
