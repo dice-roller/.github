@@ -86,7 +86,7 @@ jobs:
           appendFileSync(GITHUB_OUTPUT, 'exists=' + exists + '\n');
           console.log(exists
             ? PACKAGE + '@' + VERSION + ' is already published; skipping.'
-            : PACKAGE + '@' + VERSION + ' is not published yet.');
+            : PACKAGE + '@' + VERSION + ' is not publicly published (it may still be staged).');
           NODE
 
       - name: Install dependencies
@@ -105,8 +105,8 @@ jobs:
           BUILD_COMMAND: ${{ inputs.build-command }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
-      - name: Publish to npm
+      - name: Stage package on npm for maintainer approval
         if: steps.published.outputs.exists == 'false'
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
-        run: npm publish --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org
+        run: npm stage publish --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org
