@@ -1,0 +1,112 @@
+name: Reusable npm publishing
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: Command to run before publishing
+        required: false
+        type: string
+        default: npm test --if-present
+      build-command:
+        description: Command to build the package
+        required: false
+        type: string
+        default: npm run build --if-present
+
+permissions:
+  contents: read
+  id-token: write
+
+# Serialise releases from main and next for each package repository.
+concurrency:
+  group: npm-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out calling repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm with OIDC support
+        run: npm install --global 'npm@^11.21.0'
+
+      - name: Determine release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            main) DIST_TAG=latest ;;
+            next) DIST_TAG=next ;;
+            *) echo "Unsupported branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
+
+          PACKAGE=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+
+          if [[ "$DIST_TAG" == latest && "$VERSION" == *-* ]]; then
+            echo "Refusing to publish prerelease $VERSION with the latest tag" >&2
+            exit 1
+          fi
+
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Candidate: $PACKAGE@$VERSION (dist-tag: $DIST_TAG)"
+
+      - name: Check exact version on npm
+        id: published
+        env:
+          PACKAGE: ${{ steps.release.outputs.package }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+
+          const { PACKAGE, VERSION, GITHUB_OUTPUT } = process.env;
+          const url = 'https://registry.npmjs.org/' +
+            encodeURIComponent(PACKAGE) + '/' + encodeURIComponent(VERSION);
+          const response = await fetch(url);
+          if (response.status !== 200 && response.status !== 404) {
+            throw new Error('npm registry lookup failed: HTTP ' + response.status);
+          }
+
+          const exists = response.status === 200;
+          appendFileSync(GITHUB_OUTPUT, 'exists=' + exists + '\n');
+          console.log(exists
+            ? PACKAGE + '@' + VERSION + ' is already published; skipping.'
+            : PACKAGE + '@' + VERSION + ' is not published yet.');
+          NODE
+
+      - name: Install dependencies
+        if: steps.published.outputs.exists == 'false'
+        run: npm ci
+
+      - name: Run tests
+        if: steps.published.outputs.exists == 'false'
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"
+
+      - name: Build package
+        if: steps.published.outputs.exists == 'false'
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Publish to npm
+        if: steps.published.outputs.exists == 'false'
+        env:
+          DIST_TAG: ${{ steps.release.outputs.tag }}
+        run: npm publish --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org
