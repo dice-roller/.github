@@ -1,6 +1,6 @@
 {
   "name": "Dice Roller npm publishing",
-  "description": "Publish package versions from main (latest) or next (next) using npm Trusted Publishing.",
+  "description": "Stage npm releases from main (latest) or next (next) for approval using Trusted Publishing.",
   "iconName": "octicon package",
   "categories": [
     "JavaScript"
