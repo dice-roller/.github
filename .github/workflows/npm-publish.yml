@@ -18,14 +18,14 @@ permissions:
   contents: read
   id-token: write
 
-# Serialise releases from main and next for each package repository.
+# Serialise releases from all supported branches of each package repository.
 concurrency:
   group: npm-publish-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next' || startsWith(github.ref, 'refs/heads/releases/v')
     runs-on: ubuntu-latest
     steps:
       - name: Check out calling repository
@@ -46,19 +46,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$GITHUB_REF_NAME" in
-            main) DIST_TAG=latest ;;
-            next) DIST_TAG=next ;;
-            *) echo "Unsupported branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
-          esac
-
           PACKAGE=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
 
-          if [[ "$DIST_TAG" == latest && "$VERSION" == *-* ]]; then
-            echo "Refusing to publish prerelease $VERSION with the latest tag" >&2
+          # Validate version and separate the major version / prerelease suffix.
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid SemVer package version: $VERSION" >&2
             exit 1
           fi
+          MAJOR="${BASH_REMATCH[1]}"
+          PRERELEASE="${BASH_REMATCH[4]:-}"
+
+          case "$GITHUB_REF_NAME" in
+            main)
+              # Only main may stage stable major releases.
+              DIST_TAG=latest
+              if [[ -n "$PRERELEASE" ]]; then
+                echo "main must publish a stable version, not $VERSION" >&2
+                exit 1
+              fi
+              ;;
+            next)
+              DIST_TAG=next
+              if [[ -z "$PRERELEASE" ]]; then
+                echo "next only accepts prerelease versions (e.g. 6.0.0-beta.1), not $VERSION" >&2
+                exit 1
+              fi
+              ;;
+            releases/v*)
+              # A maintenance branch can never release a different major.
+              if [[ ! "$GITHUB_REF_NAME" =~ ^releases/v(0|[1-9][0-9]*)$ ]]; then
+                echo "Invalid maintenance branch: $GITHUB_REF_NAME (expected releases/vN)" >&2
+                exit 1
+              fi
+              RELEASE_MAJOR="${BASH_REMATCH[1]}"
+              if [[ "$MAJOR" != "$RELEASE_MAJOR" ]]; then
+                echo "$GITHUB_REF_NAME only accepts $RELEASE_MAJOR.x versions, not $VERSION" >&2
+                exit 1
+              fi
+              DIST_TAG="v$RELEASE_MAJOR"
+              ;;
+            *)
+              echo "Unsupported publishing branch: $GITHUB_REF_NAME" >&2
+              exit 1
+              ;;
+          esac
 
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
