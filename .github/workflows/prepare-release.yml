@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: beta
+    secrets:
+      RELEASE_DEPLOY_KEY:
+        description: Optional SSH private key for creating protected release tags
+        required: false
 
 permissions:
   contents: write
@@ -199,6 +203,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - name: Verify merged version and create Git tag
         shell: bash
