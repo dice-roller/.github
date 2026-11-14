@@ -63,6 +63,24 @@ The reusable `.github/workflows/prepare-release.yml` separates **release prepara
 5. Review and merge the PR. A separate job checks that it really is a generated, merged release PR and creates an annotated `vX.Y.Z` Git tag **on the merged commit**.
 6. The existing npm workflow runs from the branch push, stages the package under the correct npm dist-tag, and you approve the release on npmjs.com.
 
+### Protected release tags
+
+If a tag ruleset restricts creations, the built-in `GITHUB_TOKEN` may not be allowed to create release tags. To use an SSH deploy key for the tagging job:
+
+1. Create an SSH key pair for the package repository. Add the public key under **Settings → Deploy keys**, with **Allow write access** enabled.
+2. Store the private key as the repository Actions secret `RELEASE_DEPLOY_KEY`.
+3. Add **Deploy keys** to the tag-creation ruleset's bypass list.
+4. Pass the secret from the caller's `tag` job (the organisation template already includes this):
+
+```yaml
+    secrets:
+      RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+```
+
+The secret is optional so repositories without protected tag creation can keep using `GITHUB_TOKEN`. Only the tagging checkout uses the deploy key; release preparation still uses `GITHUB_TOKEN`.
+
+Tags pushed with a deploy key can trigger tag-based workflows. The shared npm publishing workflow runs from branch pushes, so its publishing behaviour is unchanged.
+
 ### Branch/version restrictions
 
 | Target branch | Allowed version bump inputs | Required resulting version |
