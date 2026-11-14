@@ -17,9 +17,14 @@ on:
         required: false
         type: string
         default: beta
+      release-app-id:
+        description: GitHub App ID used to create release tags
+        required: false
+        type: string
+        default: ''
     secrets:
-      RELEASE_DEPLOY_KEY:
-        description: Optional SSH private key for creating protected release tags
+      RELEASE_APP_PRIVATE_KEY:
+        description: Private key for the release GitHub App
         required: false
 
 permissions:
@@ -198,12 +203,21 @@ jobs:
       contains(github.event.pull_request.body, '<!-- dice-roller-release-pr -->')
     runs-on: ubuntu-latest
     steps:
+      - name: Create release app token
+        if: inputs.release-app-id != ''
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.release-app-id }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Check out merged release commit
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
-          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Verify merged version and create Git tag
         shell: bash
