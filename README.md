@@ -65,21 +65,27 @@ The reusable `.github/workflows/prepare-release.yml` separates **release prepara
 
 ### Protected release tags
 
-If a tag ruleset restricts creations, the built-in `GITHUB_TOKEN` may not be allowed to create release tags. To use an SSH deploy key for the tagging job:
+Use a GitHub App to let the tagging job create tags when a ruleset restricts creations:
 
-1. Create an SSH key pair for the package repository. Add the public key under **Settings → Deploy keys**, with **Allow write access** enabled.
-2. Store the private key as the repository Actions secret `RELEASE_DEPLOY_KEY`.
-3. Add **Deploy keys** to the tag-creation ruleset's bypass list.
-4. Pass the secret from the caller's `tag` job (the organisation template already includes this):
+1. Register an organisation-owned GitHub App with **Contents: Read and write**, disable webhooks and install it on the package repositories.
+2. Store its numeric App ID as the organisation Actions variable `RELEASE_APP_ID`.
+3. Generate an app private key and store the entire PEM file contents as the organisation Actions secret `RELEASE_APP_PRIVATE_KEY`. Grant the package repositories access to both the variable and secret.
+4. Add the app to the tag-creation ruleset's bypass list with **Always allow**.
+5. Pass the variable and secret from the caller's `tag` job (the organisation template already includes this):
 
 ```yaml
+    with:
+      mode: tag
+      release-app-id: ${{ vars.RELEASE_APP_ID }}
     secrets:
-      RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
-The secret is optional so repositories without protected tag creation can keep using `GITHUB_TOKEN`. Only the tagging checkout uses the deploy key; release preparation still uses `GITHUB_TOKEN`.
+Only the tagging job uses the app. It creates a short-lived token limited to the calling repository with **Contents: write**, and the token is revoked at the end of the job. Release preparation still uses `GITHUB_TOKEN`.
 
-Tags pushed with a deploy key can trigger tag-based workflows. The shared npm publishing workflow runs from branch pushes, so its publishing behaviour is unchanged.
+The app credentials are optional for callers without protected tag creation, which continue to use `GITHUB_TOKEN`.
+
+Tags pushed with the app token can trigger tag-based workflows. The shared npm publishing workflow runs from branch pushes, so its publishing behaviour is unchanged.
 
 ### Branch/version restrictions
 
