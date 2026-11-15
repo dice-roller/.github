@@ -3,6 +3,11 @@ name: Reusable npm publishing
 on:
   workflow_call:
     inputs:
+      package-directory:
+        description: Repository-relative directory containing the package to release
+        required: false
+        type: string
+        default: .
       test-command:
         description: Command to run before publishing
         required: false
@@ -44,10 +49,35 @@ jobs:
       - name: Determine release
         id: release
         shell: bash
+        env:
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
         run: |
           set -euo pipefail
-          PACKAGE=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
+          # Resolve inside the checkout, including symlinks, before reading a manifest.
+          if [[ ! "$PACKAGE_DIRECTORY" =~ ^[A-Za-z0-9._/-]+$ || "$PACKAGE_DIRECTORY" == /* ]]; then
+            echo "Expected a repository-relative package directory" >&2
+            exit 1
+          fi
+          ROOT=$(pwd -P)
+          DIRECTORY=$(realpath -e -- "$PACKAGE_DIRECTORY")
+          if [[ ! -d "$DIRECTORY" || "$DIRECTORY/" != "$ROOT/"* ]]; then
+            echo "Package directory must stay inside the repository" >&2
+            exit 1
+          fi
+          PACKAGE_DIRECTORY=$(realpath --relative-to="$ROOT" -- "$DIRECTORY")
+          MANIFEST="package.json"
+          if [[ "$PACKAGE_DIRECTORY" != '.' ]]; then
+            MANIFEST="$PACKAGE_DIRECTORY/package.json"
+          fi
+          test -f "$MANIFEST"
+          if [[ "$(realpath -e -- "$MANIFEST")" != "$ROOT/"* ]]; then
+            echo "Package manifest must stay inside the repository" >&2
+            exit 1
+          fi
+          export PACKAGE_JSON="$MANIFEST"
+          node -e 'const p = JSON.parse(require("fs").readFileSync(process.env.PACKAGE_JSON, "utf8")); if (p.private === true) throw new Error("The selected package is private");'
+          PACKAGE=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).name")
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).version")
 
           # Validate version and separate the major version / prerelease suffix.
           if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
@@ -93,6 +123,7 @@ jobs:
               ;;
           esac
 
+          echo "directory=$PACKAGE_DIRECTORY" >> "$GITHUB_OUTPUT"
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
@@ -139,7 +170,8 @@ jobs:
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
       - name: Stage package on npm for maintainer approval
+        working-directory: ${{ steps.release.outputs.directory }}
         if: steps.published.outputs.exists == 'false'
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
-        run: npm stage publish --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org
+        run: npm stage publish --workspaces=false --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org

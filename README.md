@@ -46,7 +46,7 @@ With the caller workflow on a package's **default branch**, open **Actions → P
 - Protect `main`, `next` and maintained `releases/vN` branches in package repositories, and protect the central workflow's release references.
 - The workflow validates **versions at publication time**. It does not stop someone committing an incorrect version; add a PR status check if you also want to block invalid version bumps from merging.
 - Existing package-specific callers (such as the VitePress plugin pilot) must explicitly opt into `releases/v*` pushes to enable maintenance publishing.
-- The workflow expects one public npm package at the repository root and a committed `package-lock.json`.
+- By default, the workflow releases the public npm package at the repository root. Set `package-directory` for a nested npm workspace. Dependency installation always uses the committed root `package-lock.json`.
 - Package-specific test/build commands and `prepublishOnly` scripts may duplicate work; adapt the caller inputs as needed.
 - Check that each package's `repository.url` matches its GitHub repository.
 
@@ -104,9 +104,99 @@ The release branch name is `release/prepare/<target>/v<version>`, with slashes i
 
 - A PR created using the built-in `GITHUB_TOKEN` may display **Approve workflows to run** before normal PR CI executes. GitHub requires this additional approval for PRs created by workflow automation. For CI to run automatically on these PRs instead, the release workflow would need to use a dedicated GitHub App installation token or fine-grained personal access token.
 - **Never merge the release PR before its required CI checks pass.** Keep branch protections in place on `main`, `next` and supported `releases/vN` branches.
-- This workflow uses `npm version --no-git-tag-version --ignore-scripts`, so it updates `package.json` and `package-lock.json` but does not run lifecycle hooks, create a version commit or create a tag until our own release steps do so. It assumes a root-level npm package and committed lockfile.
+- This workflow uses `npm version --no-git-tag-version --ignore-scripts`, so it updates `package.json` and `package-lock.json` but does not run lifecycle hooks, create a version commit or create a tag until our own release steps do so. It supports a root package or selected npm workspace, with a committed root lockfile.
 - The npm staging workflow is separate: the merge is a real user action, so its push event triggers staging. The Git tag is for Git history only; publishing is not triggered by the tag.
 - A tag is created after the **release PR merge**, not after npm staging approval. If staging or approval fails, the tag still identifies the prepared release and the workflow can be retried.
+
+## Releasing packages from a workspace repository
+
+Both central workflows accept an optional `package-directory` input, defaulting
+to `.`. The Prepare Release workflow also accepts `tag-prefix`, defaulting to
+`v`. Existing callers need no changes and retain their current version bumps,
+release branch names and `vX.Y.Z` tags.
+
+For the SVG presenter, the publishing caller can use:
+
+```yaml
+jobs:
+  publish-svg:
+    uses: dice-roller/.github/.github/workflows/npm-publish.yml@main
+    with:
+      package-directory: packages/svg
+```
+
+The caller still needs the existing branch filters and `id-token: write`
+permission. To stage only SVG manifest changes automatically, use
+`paths: ['packages/svg/package.json']` on its push trigger. Configure npm Trusted
+Publishing for the package's calling workflow filename, as described above.
+
+Set the same package directory and prefix in **both** preparation and tagging:
+
+```yaml
+jobs:
+  prepare-svg:
+    if: github.event_name == 'workflow_dispatch'
+    uses: dice-roller/.github/.github/workflows/prepare-release.yml@main
+    with:
+      mode: prepare
+      package-directory: packages/svg
+      tag-prefix: svg-v
+      bump: ${{ inputs.bump }}
+      prerelease-id: ${{ inputs.prerelease-id }}
+
+  tag-svg:
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    uses: dice-roller/.github/.github/workflows/prepare-release.yml@main
+    with:
+      mode: tag
+      package-directory: packages/svg
+      tag-prefix: svg-v
+      release-app-id: ${{ vars.RELEASE_APP_ID }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
+
+Use the existing dispatch inputs and merged-PR trigger from the template. The
+reusable workflow retains its checks for generated, same-repository release PRs.
+For additional presenters, add explicit jobs with their own package directory
+and a unique prefix, such as `terminal-v`. Tag jobs skip PRs for other prefixes.
+
+For SVG version `1.2.0` on `main`, the release branch is
+`release/prepare/main/svg-v1.2.0` and the Git tag is `svg-v1.2.0`. The npm package
+version remains `1.2.0`; the prefix only identifies Git releases. Include these
+prefixed tags in any existing tag-protection rules.
+
+The workflows:
+
+- Read the selected package's name and version, not the private workspace root.
+- Bump only that workspace using `npm version --workspace`, synchronise the root
+  lockfile, and commit the selected manifest plus that lockfile.
+- Install dependencies and run the configured test/build commands at the root.
+  Override `test-command` or `build-command` to target a single workspace if wanted.
+- Run `npm stage publish --workspaces=false` from the selected package directory;
+  staging does not depend on npm's workspace auto-detection.
+- Validate that package directories and manifests resolve inside the checkout,
+  reject private packages, and validate tag prefixes before changing versions.
+
+Use repository-relative package paths made from letters, numbers, `.`, `_`, `-`
+and `/`. Tag prefixes must start with a letter or number and contain only letters,
+numbers, `.`, `_` or `-`, and must produce a valid Git tag.
+
+There are no automatic multi-package releases or repository-specific release
+scripts. Each caller explicitly selects the package it wants to release.
+
+## Workflow regression tests
+
+```sh
+python -m pip install -r tests/requirements.txt
+python -m unittest discover -s tests -v
+```
+
+The tests execute shell steps extracted from the actual workflow YAML against
+root-package and npm-workspace fixtures. Versioning runs offline with lifecycle
+hooks disabled, and tag pushes target disposable local Git repositories. npm
+staging is never executed. The checks run automatically on workflow/template/test
+pull requests and pushes to `main`.
 
 ## References
 

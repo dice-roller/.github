@@ -3,6 +3,16 @@ name: Reusable release preparation
 on:
   workflow_call:
     inputs:
+      package-directory:
+        description: Repository-relative directory containing the package to release
+        required: false
+        type: string
+        default: .
+      tag-prefix:
+        description: Prefix for release branches and Git tags (e.g. v or svg-v)
+        required: false
+        type: string
+        default: v
       mode:
         description: Prepare a release PR, or tag a merged release PR
         required: true
@@ -58,6 +68,8 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
           PREID: ${{ inputs.prerelease-id }}
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
         run: |
           set -euo pipefail
           BRANCH="$GITHUB_REF_NAME"
@@ -97,10 +109,37 @@ jobs:
               ;;
           esac
 
-          test -f package.json
+          if [[ ! "$TAG_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! git check-ref-format "refs/tags/${TAG_PREFIX}0.0.0"; then
+            echo "Invalid release tag prefix: $TAG_PREFIX" >&2
+            exit 1
+          fi
+
+          # Resolve inside the checkout, including symlinks, before reading a manifest.
+          if [[ ! "$PACKAGE_DIRECTORY" =~ ^[A-Za-z0-9._/-]+$ || "$PACKAGE_DIRECTORY" == /* ]]; then
+            echo "Expected a repository-relative package directory" >&2
+            exit 1
+          fi
+          ROOT=$(pwd -P)
+          DIRECTORY=$(realpath -e -- "$PACKAGE_DIRECTORY")
+          if [[ ! -d "$DIRECTORY" || "$DIRECTORY/" != "$ROOT/"* ]]; then
+            echo "Package directory must stay inside the repository" >&2
+            exit 1
+          fi
+          PACKAGE_DIRECTORY=$(realpath --relative-to="$ROOT" -- "$DIRECTORY")
+          MANIFEST="package.json"
+          if [[ "$PACKAGE_DIRECTORY" != '.' ]]; then
+            MANIFEST="$PACKAGE_DIRECTORY/package.json"
+          fi
+          test -f "$MANIFEST"
+          if [[ "$(realpath -e -- "$MANIFEST")" != "$ROOT/"* ]]; then
+            echo "Package manifest must stay inside the repository" >&2
+            exit 1
+          fi
+          export PACKAGE_JSON="$MANIFEST"
+          node -e 'const p = JSON.parse(require("fs").readFileSync(process.env.PACKAGE_JSON, "utf8")); if (p.private === true) throw new Error("The selected package is private");'
           test -f package-lock.json
 
-          CURRENT=$(node -p "require('./package.json').version")
+          CURRENT=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).version")
           if [[ ! "$CURRENT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
             echo "Invalid existing package version: $CURRENT" >&2
             exit 1
@@ -111,9 +150,16 @@ jobs:
           fi
 
           # Update package.json and lockfile, but make no commit or tag yet.
-          npm version "$BUMP" --preid "$PREID" --no-git-tag-version --ignore-scripts
+          WORKSPACE_ARGS=()
+          if [[ "$PACKAGE_DIRECTORY" != '.' ]]; then
+            WORKSPACE_ARGS=(--workspace "$PACKAGE_DIRECTORY")
+          fi
+          npm version "$BUMP" "${WORKSPACE_ARGS[@]}" --preid "$PREID" --no-git-tag-version --ignore-scripts
+          if [[ "$PACKAGE_DIRECTORY" != '.' ]]; then
+            npm install --package-lock-only --ignore-scripts
+          fi
 
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).version")
           if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
             echo "Invalid resulting package version: $VERSION" >&2
             exit 1
@@ -142,6 +188,8 @@ jobs:
               ;;
           esac
 
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          echo "package=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).name")" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "target=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "Release PR: $BRANCH $CURRENT -> $VERSION"
@@ -152,11 +200,14 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           TARGET: ${{ steps.release.outputs.target }}
           BUMP: ${{ inputs.bump }}
+          MANIFEST: ${{ steps.release.outputs.manifest }}
+          PACKAGE: ${{ steps.release.outputs.package }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
         shell: bash
         run: |
           set -euo pipefail
 
-          RELEASE_BRANCH="release/prepare/${TARGET//\//-}/v$VERSION"
+          RELEASE_BRANCH="release/prepare/${TARGET//\//-}/${TAG_PREFIX}$VERSION"
           if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null; then
             echo "Release branch already exists: $RELEASE_BRANCH" >&2
             exit 1
@@ -166,18 +217,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -- package.json package-lock.json
+          git add -- "$MANIFEST" package-lock.json
           if git diff --cached --quiet; then
             echo "No package version changes to commit" >&2
             exit 1
           fi
-          git commit -m "chore(release): v$VERSION"
+          git commit -m "chore(release): ${TAG_PREFIX}$VERSION"
           git push origin "HEAD:refs/heads/$RELEASE_BRANCH"
 
           cat > /tmp/dice-roller-release.md <<EOF
           <!-- dice-roller-release-pr -->
           Prepare version \`$VERSION\` for the \`$TARGET\` branch.
 
+          - Package: \`$PACKAGE\` (\`$MANIFEST\`)
           - Bump type: \`$BUMP\`
           - Target branch: \`$TARGET\`
           - No Git tag is created until this PR is merged.
@@ -189,7 +241,7 @@ jobs:
           gh pr create \
             --base "$TARGET" \
             --head "$RELEASE_BRANCH" \
-            --title "chore(release): v$VERSION" \
+            --title "chore(release): ${TAG_PREFIX}$VERSION" \
             --body-file /tmp/dice-roller-release.md
 
   tag:
@@ -203,8 +255,29 @@ jobs:
       contains(github.event.pull_request.body, '<!-- dice-roller-release-pr -->')
     runs-on: ubuntu-latest
     steps:
+      - name: Select matching package release PR
+        id: selection
+        shell: bash
+        env:
+          TARGET: ${{ github.event.pull_request.base.ref }}
+          SOURCE: ${{ github.event.pull_request.head.ref }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! git check-ref-format "refs/tags/${TAG_PREFIX}0.0.0"; then
+            echo "Invalid release tag prefix: $TAG_PREFIX" >&2
+            exit 1
+          fi
+          PREFIX="release/prepare/${TARGET//\//-}/${TAG_PREFIX}"
+          if [[ "$SOURCE" == "$PREFIX"* ]]; then
+            echo "matches=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "Release PR belongs to another package; skipping."
+          fi
+
       - name: Create release app token
-        if: inputs.release-app-id != ''
+        if: steps.selection.outputs.matches == 'true' && inputs.release-app-id != ''
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
@@ -213,6 +286,7 @@ jobs:
           permission-contents: write
 
       - name: Check out merged release commit
+        if: steps.selection.outputs.matches == 'true'
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
@@ -220,15 +294,41 @@ jobs:
           token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Verify merged version and create Git tag
+        if: steps.selection.outputs.matches == 'true'
         shell: bash
         env:
           TARGET: ${{ github.event.pull_request.base.ref }}
           SOURCE: ${{ github.event.pull_request.head.ref }}
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
         run: |
           set -euo pipefail
 
-          VERSION=$(node -p "require('./package.json').version")
-          EXPECTED="release/prepare/${TARGET//\//-}/v$VERSION"
+          # Resolve inside the checkout, including symlinks, before reading a manifest.
+          if [[ ! "$PACKAGE_DIRECTORY" =~ ^[A-Za-z0-9._/-]+$ || "$PACKAGE_DIRECTORY" == /* ]]; then
+            echo "Expected a repository-relative package directory" >&2
+            exit 1
+          fi
+          ROOT=$(pwd -P)
+          DIRECTORY=$(realpath -e -- "$PACKAGE_DIRECTORY")
+          if [[ ! -d "$DIRECTORY" || "$DIRECTORY/" != "$ROOT/"* ]]; then
+            echo "Package directory must stay inside the repository" >&2
+            exit 1
+          fi
+          PACKAGE_DIRECTORY=$(realpath --relative-to="$ROOT" -- "$DIRECTORY")
+          MANIFEST="package.json"
+          if [[ "$PACKAGE_DIRECTORY" != '.' ]]; then
+            MANIFEST="$PACKAGE_DIRECTORY/package.json"
+          fi
+          test -f "$MANIFEST"
+          if [[ "$(realpath -e -- "$MANIFEST")" != "$ROOT/"* ]]; then
+            echo "Package manifest must stay inside the repository" >&2
+            exit 1
+          fi
+          export PACKAGE_JSON="$MANIFEST"
+          node -e 'const p = JSON.parse(require("fs").readFileSync(process.env.PACKAGE_JSON, "utf8")); if (p.private === true) throw new Error("The selected package is private");'
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PACKAGE_JSON, 'utf8')).version")
+          EXPECTED="release/prepare/${TARGET//\//-}/${TAG_PREFIX}$VERSION"
 
           if [[ "$SOURCE" != "$EXPECTED" ]]; then
             echo "Release PR source does not match the merged version: $SOURCE, expected $EXPECTED" >&2
@@ -268,13 +368,13 @@ jobs:
           esac
 
           # A release PR must actually update the version on the target.
-          OLD_VERSION=$(git show HEAD^:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          OLD_VERSION=$(git show "HEAD^:$MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
           if [[ "$OLD_VERSION" == "$VERSION" ]]; then
             echo "The merged PR did not change the package version" >&2
             exit 1
           fi
 
-          TAG="v$VERSION"
+          TAG="${TAG_PREFIX}$VERSION"
           if git rev-parse -q --verify "refs/tags/$TAG^{}" >/dev/null; then
             TAG_SHA=$(git rev-parse "refs/tags/$TAG^{}")
             if [[ "$TAG_SHA" != "$(git rev-parse HEAD)" ]]; then
