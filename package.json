@@ -1,0 +1,25 @@
+{
+  "name": "dice-roller-github-workflow-tests",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build:tests": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:tests && jest --runInBand"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/.test-build/**/*.test.js"
+    ],
+    "transform": {},
+    "testTimeout": 30000
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.5.2",
+    "@types/node": "^26.6.6",
+    "jest": "^30.5.2",
+    "typescript": "^7.0.2",
+    "yaml": "^2.9.1"
+  }
+}

@@ -188,11 +188,11 @@ scripts. Each caller explicitly selects the package it wants to release.
 ## Workflow regression tests
 
 ```sh
-python -m pip install -r tests/requirements.txt
-python -m unittest discover -s tests -v
+npm ci
+npm test
 ```
 
-The tests execute shell steps extracted from the actual workflow YAML against
+The TypeScript tests compile with `tsc` and run with Jest. They execute shell steps extracted from the actual workflow YAML against
 root-package and npm-workspace fixtures. Versioning runs offline with lifecycle
 hooks disabled, and tag pushes target disposable local Git repositories. npm
 staging is never executed. The checks run automatically on workflow/template/test
