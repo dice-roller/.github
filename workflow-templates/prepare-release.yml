@@ -35,6 +35,9 @@ jobs:
     uses: dice-roller/.github/.github/workflows/prepare-release.yml@main
     with:
       mode: prepare
+      # For a workspace, set these identically in prepare and tag:
+      # package-directory: packages/svg
+      # tag-prefix: svg-v
       bump: ${{ inputs.bump }}
       prerelease-id: ${{ inputs.prerelease-id }}
 
@@ -48,6 +51,8 @@ jobs:
     uses: dice-roller/.github/.github/workflows/prepare-release.yml@main
     with:
       mode: tag
+      # package-directory: packages/svg
+      # tag-prefix: svg-v
       release-app-id: ${{ vars.RELEASE_APP_ID }}
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

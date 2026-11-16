@@ -13,7 +13,8 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next' || startsWith(github.ref, 'refs/heads/releases/v')
     uses: dice-roller/.github/.github/workflows/npm-publish.yml@main
-    # Optional package-specific commands:
+    # Optional package-specific settings:
     # with:
+    #   package-directory: packages/svg
     #   test-command: npm run test:coverage
     #   build-command: npm run build
